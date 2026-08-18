@@ -4,6 +4,8 @@ import com.asbg.outboxlab.application.dto.CreatePostingCommand;
 import com.asbg.outboxlab.application.dto.PostingResult;
 import com.asbg.outboxlab.domain.posting.Posting;
 import com.asbg.outboxlab.domain.posting.PostingRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,6 +17,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class PostingCommandService {
 
+    private static final Logger log = LoggerFactory.getLogger(PostingCommandService.class);
+
     private final PostingRepository postingRepository;
 
     public PostingCommandService(PostingRepository postingRepository) {
@@ -25,6 +29,7 @@ public class PostingCommandService {
     public PostingResult create(CreatePostingCommand command) {
         Posting posting = Posting.create(command.title());
         Posting saved = postingRepository.save(posting);
+        log.info("공고 생성: postingId={}, title={}", saved.getId(), saved.getTitle());
         return new PostingResult(saved.getId(), saved.getTitle(), saved.getCurrentStage().name());
     }
 }

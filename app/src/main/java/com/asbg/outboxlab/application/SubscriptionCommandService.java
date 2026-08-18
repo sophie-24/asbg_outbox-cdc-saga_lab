@@ -3,6 +3,8 @@ package com.asbg.outboxlab.application;
 import com.asbg.outboxlab.application.dto.SubscribeCommand;
 import com.asbg.outboxlab.domain.subscription.NotificationSubscription;
 import com.asbg.outboxlab.domain.subscription.NotificationSubscriptionRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,6 +18,8 @@ import java.util.UUID;
 @Service
 public class SubscriptionCommandService {
 
+    private static final Logger log = LoggerFactory.getLogger(SubscriptionCommandService.class);
+
     private final NotificationSubscriptionRepository subscriptionRepository;
 
     public SubscriptionCommandService(NotificationSubscriptionRepository subscriptionRepository) {
@@ -26,6 +30,8 @@ public class SubscriptionCommandService {
     public UUID subscribe(SubscribeCommand command) {
         NotificationSubscription subscription =
                 NotificationSubscription.create(command.postingId(), command.userId());
-        return subscriptionRepository.save(subscription).getId();
+        NotificationSubscription saved = subscriptionRepository.save(subscription);
+        log.info("알림 구독 등록: postingId={}, userId={}", command.postingId(), command.userId());
+        return saved.getId();
     }
 }
