@@ -1,0 +1,48 @@
+{
+  "Comment": "SelectionAnnounced 이벤트에 대한 Saga: AdvanceStage -> NotifySubscribers. 알림이 실패하면 RevertStageAdvance로 단계 전환을 되돌린다 (다음 단계는 구독자 전원이 통보받기 전까지 공식적으로 열린 게 아니라는 공정성 원칙).",
+  "StartAt": "AdvanceStage",
+  "States": {
+    "AdvanceStage": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "__ADVANCE_STAGE_FUNCTION_ARN__",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$.advanceResult",
+      "Next": "NotifySubscribers"
+    },
+    "NotifySubscribers": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "__NOTIFY_SUBSCRIBERS_FUNCTION_ARN__",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$.notifyResult",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.notifyError",
+          "Next": "RevertStageAdvance"
+        }
+      ],
+      "End": true
+    },
+    "RevertStageAdvance": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "__REVERT_STAGE_ADVANCE_FUNCTION_ARN__",
+        "Payload.$": "$"
+      },
+      "ResultPath": "$.revertResult",
+      "Next": "NotificationFailed"
+    },
+    "NotificationFailed": {
+      "Type": "Fail",
+      "Error": "NotificationDeliveryFailed",
+      "Cause": "구독자 알림에 실패해 전형 단계 전환을 되돌렸습니다."
+    }
+  }
+}
