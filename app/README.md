@@ -33,7 +33,7 @@ application/        유스케이스. 쓰기(Command)와 읽기(Query)를 클래�
 
 infrastructure/     구현 세부사항 — 여기가 바뀌어도 domain/application은 안 바뀌어야 정상
   persistence/       Spring Data JPA 어댑터 + PostingCounterGateway(JdbcTemplate)
-  web/               REST 컨트롤러, 예외 매핑
+  web/               REST 컨트롤러, CORS/예외 매핑
 ```
 
 ## 이 코드에서 짚고 있는 것들
@@ -57,12 +57,108 @@ infrastructure/     구현 세부사항 — 여기가 바뀌어도 domain/applic
   둔 예외이고, 나머지 저장소(Posting/StatusReport/NotificationSubscription)는 전부
   domain 포트를 통해서만 접근합니다.
 
-## 로컬 실행
+## 실행 방법
+
+### 0. 사전 준비
+
+- JDK 21
+- Docker (로컬 Postgres 실행 + 자동화 테스트의 Testcontainers 둘 다 필요)
+
+### 1. 로컬 Postgres 띄우기
 
 ```bash
-./gradlew build
+docker run --name outboxlab-postgres \
+  -e POSTGRES_DB=outboxlab -e POSTGRES_USER=outboxlab -e POSTGRES_PASSWORD=outboxlab \
+  -p 5432:5432 -d postgres:16-alpine
+```
+
+`application.yml`의 기본값(`outboxlab`/`outboxlab`/`localhost:5432`)과 정확히 맞아서
+별도 환경변수 없이 바로 연결됩니다. Aurora로 돌릴 때는 `DB_HOST`, `DB_NAME`,
+`DB_USERNAME`, `DB_PASSWORD` 환경변수로 덮어쓰면 됩니다.
+
+### 2. 애플리케이션 실행
+
+Windows(PowerShell):
+
+```powershell
+cd app
+.\gradlew.bat bootRun
+```
+
+Mac/Linux:
+
+```bash
+cd app
 ./gradlew bootRun
 ```
 
-`DB_HOST`, `DB_NAME`, `DB_USERNAME`, `DB_PASSWORD` 환경변수로 Aurora(또는 로컬 Postgres)를
-가리키세요. 스키마는 Flyway가 기동 시 자동 적용합니다(`src/main/resources/db/migration`).
+스키마는 Flyway가 기동 시 자동 적용합니다(`src/main/resources/db/migration`).
+
+### 3. 살아있는지 확인
+
+```bash
+curl http://localhost:8080/actuator/health
+```
+
+## 테스트 방법
+
+### 1. 자동화 테스트 (동시성 검증이 핵심)
+
+```powershell
+cd app
+.\gradlew.bat test
+```
+
+`StatusReportCommandServiceConcurrencyTest`가 Testcontainers로 별도의 실제 Postgres를
+띄워서, 임계값(15건) 직전까지 채운 뒤 동시 요청 10개를 쏘고 정확히 하나만
+"발표"로 확정되는지 검증합니다. 1단계에서 띄운 Postgres와는 완전히 별개의
+컨테이너이고 테스트가 끝나면 자동으로 정리됩니다 — Docker만 실행 중이면 됩니다.
+
+특정 테스트만: `.\gradlew.bat test --tests "*ConcurrencyTest"`
+결과 리포트: `app/build/reports/tests/test/index.html`
+
+### 2. 수동으로 API 호출해보기 (PowerShell)
+
+```powershell
+# 공고 생성
+$posting = Invoke-RestMethod http://localhost:8080/postings -Method Post -ContentType "application/json" -Body '{"title":"백엔드 신입 공채"}'
+$postingId = $posting.postingId
+
+# 14건까지는 그냥 기록됨 (announced=false)
+1..14 | ForEach-Object {
+    Invoke-RestMethod "http://localhost:8080/postings/$postingId/status-reports" -Method Post -ContentType "application/json" -Body (@{status="PASS"; reporterId="user-$_"} | ConvertTo-Json)
+}
+
+# 15번째 — announced=true, eventId/correlationId가 채워짐
+Invoke-RestMethod "http://localhost:8080/postings/$postingId/status-reports" -Method Post -ContentType "application/json" -Body (@{status="PASS"; reporterId="user-15"} | ConvertTo-Json)
+
+# 집계 확인
+Invoke-RestMethod http://localhost:8080/postings
+
+# 알림 구독
+Invoke-RestMethod "http://localhost:8080/postings/$postingId/subscriptions" -Method Post -ContentType "application/json" -Body (@{userId="gyuri"} | ConvertTo-Json)
+```
+
+Mac/Linux에서는 `Invoke-RestMethod ... -Method Post`를 `curl -X POST ...`로 바꾸면
+동일하게 동작합니다.
+
+### 3. 동시에 여러 요청을 쏴서 레이스를 직접 재현하기 (PowerShell 7+)
+
+```powershell
+1..10 | ForEach-Object -Parallel {
+    Invoke-RestMethod "http://localhost:8080/postings/$using:postingId/status-reports" -Method Post -ContentType "application/json" -Body (@{status="PASS"; reporterId="racer-$_"} | ConvertTo-Json)
+} -ThrottleLimit 10
+```
+
+애플리케이션 로그를 보면, 여러 요청이 `count>=15`를 동시에 관측해도
+"15건 임계값 확정 — SelectionAnnounced 이벤트 적재" 로그는 정확히 한 줄만 찍힙니다.
+
+### 4. DB에서 직접 확인
+
+```bash
+docker exec -it outboxlab-postgres psql -U outboxlab -d outboxlab -c "select current_stage, stage_report_count, stage_announced_at from postings;"
+docker exec -it outboxlab-postgres psql -U outboxlab -d outboxlab -c "select event_type, aggregate_id, correlation_id from outbox_events;"
+```
+
+동시에 15건을 넘긴 요청이 여러 개였어도 `outbox_events`에는
+`SelectionAnnounced`가 정확히 1건만 있어야 합니다.
